@@ -5,9 +5,10 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Optional
 
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from app.core.config import settings
 from app.services.ws_broadcaster import ws_broadcaster
@@ -15,6 +16,12 @@ from app.services.ws_broadcaster import ws_broadcaster
 logger = logging.getLogger(__name__)
 
 TOPICS = ["ecg_waveform", "ecg_pred_beat", "ecg_alert"]
+
+TOPIC_TO_WS_TYPE = {
+    "ecg_waveform": "waveform",
+    "ecg_pred_beat": "prediction",
+    "ecg_alert": "alert",
+}
 
 
 class KafkaConsumerService:
@@ -39,18 +46,45 @@ class KafkaConsumerService:
         logger.info("Kafka consumer service stopped.")
 
     def _consume_loop(self):
+        msg_counts: dict[str, int] = {t: 0 for t in TOPICS}
+
+        # Retry connection to Kafka
+        consumer = None
+        for attempt in range(30):
+            if not self._running:
+                return
+            try:
+                consumer = Consumer({
+                    "bootstrap.servers": settings.KAFKA_BOOTSTRAP_SERVERS,
+                    "group.id": "backend-ws-group",
+                    "auto.offset.reset": "latest",
+                    "enable.auto.commit": True,
+                    "session.timeout.ms": 30000,
+                })
+                consumer.subscribe(TOPICS)
+                logger.info(f"Kafka consumer subscribed to: {TOPICS}")
+                break
+            except Exception as e:
+                logger.warning(f"Kafka connect attempt {attempt+1}/30 failed: {e}")
+                time.sleep(2)
+
+        if consumer is None:
+            logger.error("Failed to connect to Kafka after 30 attempts")
+            return
+
         try:
-            consumer = Consumer({
-                "bootstrap.servers": settings.KAFKA_BOOTSTRAP_SERVERS,
-                "group.id": "backend-ws-group",
-                "auto.offset.reset": "latest",
-                "enable.auto.commit": True,
-            })
-            consumer.subscribe(TOPICS)
-            logger.info(f"Kafka consumer subscribed to: {TOPICS}")
+            last_log_time = time.time()
+            last_resubscribe_time = time.time()
 
             while self._running:
                 msg = consumer.poll(timeout=0.5)
+
+                # Periodically re-subscribe to discover newly created topics
+                now = time.time()
+                if now - last_resubscribe_time > 15:
+                    consumer.subscribe(TOPICS)
+                    last_resubscribe_time = now
+
                 if msg is None:
                     continue
                 if msg.error():
@@ -60,23 +94,26 @@ class KafkaConsumerService:
                     continue
 
                 topic = msg.topic()
+                msg_type = TOPIC_TO_WS_TYPE.get(topic)
+                if msg_type is None:
+                    continue
+
                 try:
                     value = json.loads(msg.value().decode("utf-8"))
                 except Exception as e:
-                    logger.error(f"Failed to parse: {e}")
+                    logger.error(f"Failed to parse message from {topic}: {e}")
                     continue
 
                 session_id = value.get("session_id", "")
+                msg_counts[topic] = msg_counts.get(topic, 0) + 1
 
-                # Map topic to WS message type
-                if topic == "ecg_waveform":
-                    msg_type = "waveform"
-                elif topic == "ecg_pred_beat":
-                    msg_type = "prediction"
-                elif topic == "ecg_alert":
-                    msg_type = "alert"
-                else:
-                    continue
+                # Periodic logging (every 30 seconds)
+                if now - last_log_time > 30:
+                    logger.info(
+                        f"Kafka msg counts: {msg_counts} | "
+                        f"Active WS sessions: {ws_broadcaster.active_sessions}"
+                    )
+                    last_log_time = now
 
                 # Schedule broadcast on the event loop
                 if self._loop and self._loop.is_running():

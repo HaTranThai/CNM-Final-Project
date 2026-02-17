@@ -1,41 +1,36 @@
-import { useState, useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { Row, Col, Card, Typography, Tag, Space, Badge, Select, Statistic, Progress } from 'antd';
-import { HeartOutlined, ThunderboltOutlined, WifiOutlined } from '@ant-design/icons';
+import { HeartOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import { useQuery } from '@tanstack/react-query';
-import { useWebSocket } from '../api/ws';
 import { getSessions } from '../api/endpoints';
+import { useLiveMonitorStore } from '../stores/liveMonitorStore';
 import type { WSPredictionData, WSWaveformData } from '../types/ws';
 
 const { Title, Text } = Typography;
 
 export default function LiveMonitorPage() {
     const { data: sessions } = useQuery({ queryKey: ['sessions'], queryFn: getSessions });
-    const [selectedSession, setSelectedSession] = useState<string | null>(null);
-    const { connected, lastWaveform, lastPrediction, alerts } = useWebSocket(selectedSession);
-    const [waveformData, setWaveformData] = useState<number[]>([]);
 
-    // Auto-select first running session
+    // Global store — survives page navigation
+    const {
+        sessionId: selectedSession,
+        setSessionId: setSelectedSession,
+        connected,
+        waveformData,
+        lastWaveform,
+        lastPrediction,
+        alerts,
+    } = useLiveMonitorStore();
+
+    // Auto-select first running session (only if none selected yet)
     useEffect(() => {
         if (sessions && sessions.length > 0 && !selectedSession) {
             const running = sessions.find((s) => s.status === 'RUNNING');
             if (running) setSelectedSession(running.session_id);
             else setSelectedSession(sessions[0].session_id);
         }
-    }, [sessions, selectedSession]);
-
-    // Append waveform data
-    useEffect(() => {
-        if (lastWaveform) {
-            const wf = lastWaveform as WSWaveformData;
-            if (wf.samples && wf.samples[0]) {
-                setWaveformData((prev) => {
-                    const updated = [...prev, ...wf.samples[0]];
-                    return updated.slice(-1800); // Keep last ~5s at 360Hz
-                });
-            }
-        }
-    }, [lastWaveform]);
+    }, [sessions, selectedSession, setSelectedSession]);
 
     const pred = lastPrediction as WSPredictionData | null;
     const sqi = (lastWaveform as WSWaveformData)?.sqi ?? 1.0;
@@ -43,7 +38,7 @@ export default function LiveMonitorPage() {
     const chartOption = {
         animation: false,
         grid: { top: 20, right: 20, bottom: 30, left: 50 },
-        xAxis: { type: 'category' as const, show: false, data: waveformData.map((_, i) => i) },
+        xAxis: { type: 'category' as const, show: false, data: waveformData.map((_: number, i: number) => i) },
         yAxis: { type: 'value' as const, show: false },
         series: [
             {

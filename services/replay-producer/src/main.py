@@ -58,6 +58,28 @@ def main():
     session_id = str(uuid.uuid4())
     patient_id = "d0000000-0000-0000-0000-000000000001"
 
+    # Insert session into DB so FK constraints are satisfied
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://ecg_admin:ecg_secret_2024@postgres:5432/ecg_cdss"
+    ).replace("postgresql+asyncpg://", "postgresql://")
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO session (session_id, patient_id, source_type, status, record_name)
+               VALUES (%s, %s, 'replay', 'RUNNING', %s)
+               ON CONFLICT DO NOTHING""",
+            (session_id, patient_id, record_name),
+        )
+        cur.close()
+        conn.close()
+        logger.info(f"Session {session_id} created in DB.")
+    except Exception as e:
+        logger.warning(f"Could not create session in DB (alert-engine writes may fail): {e}")
+
     # Build beat list from annotations
     beat_samples = list(annotation.sample)
     beat_symbols = list(annotation.symbol)

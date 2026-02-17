@@ -124,7 +124,7 @@ INSERT INTO "user" (user_id, role_id, username, password_hash, display_name) VAL
     ('b0000000-0000-0000-0000-000000000001',
      'a0000000-0000-0000-0000-000000000001',
      'admin',
-     '$2b$12$LJ3m4ys3uz0b9V7.FkS8..9pF7Exy/cEU.7CkSCaQJGBMRsWjay.e',
+     '$2b$12$hf7IZRUH92KCLZyTHtwCk.y9dx7XlDRXgVsRHcKouJ6VYE4K5oiSC',
      'Administrator')
 ON CONFLICT (username) DO NOTHING;
 
@@ -133,7 +133,7 @@ INSERT INTO "user" (user_id, role_id, username, password_hash, display_name) VAL
     ('b0000000-0000-0000-0000-000000000002',
      'a0000000-0000-0000-0000-000000000002',
      'doctor',
-     '$2b$12$LJ3m4ys3uz0b9V7.FkS8..9pF7Exy/cEU.7CkSCaQJGBMRsWjay.e',
+     '$2b$12$9xx/34mlqn0XvRWRoV0Cgeuy8uQpfbRp.Mi./y7QalrEIuq3CUPtK',
      'Dr. Demo')
 ON CONFLICT (username) DO NOTHING;
 

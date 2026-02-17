@@ -71,9 +71,6 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    environment:
-      VITE_API_BASE_URL: http://localhost:8000
-      VITE_WS_BASE_URL: ws://localhost:8000
     depends_on:
       - backend
 
@@ -84,6 +81,7 @@ services:
       dockerfile: replay-producer/Dockerfile
     environment:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ecg_admin:ecg_secret_2024@postgres:5432/ecg_cdss}
       MITBIH_RECORD: ${MITBIH_RECORD:-223}
       STREAM_CHUNK_SEC: ${STREAM_CHUNK_SEC:-1.0}
       REALTIME_SPEED: ${REALTIME_SPEED:-1.0}
@@ -91,6 +89,8 @@ services:
       - ./services/replay-producer/data:/app/data
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: on-failure
 
