@@ -1,0 +1,148 @@
+services:
+  # ── Infrastructure ──
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode (no Zookeeper)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - ./infra/kafka/create-topics.sh:/scripts/create-topics.sh
+    healthcheck:
+      test: [ "CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ecg_cdss}
+      POSTGRES_USER: ${POSTGRES_USER:-ecg_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecg_secret_2024}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ecg_admin} -d ${POSTGRES_DB:-ecg_cdss}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ──
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ecg_admin:ecg_secret_2024@postgres:5432/ecg_cdss}
+      SECRET_KEY: ${SECRET_KEY:-change-me-super-secret-key-at-least-32-chars}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── Frontend (React) ──
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_WS_BASE_URL: ws://localhost:8000
+    depends_on:
+      - backend
+
+  # ── Replay Producer ──
+  replay-producer:
+    build:
+      context: ./services
+      dockerfile: replay-producer/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      MITBIH_RECORD: ${MITBIH_RECORD:-223}
+      STREAM_CHUNK_SEC: ${STREAM_CHUNK_SEC:-1.0}
+      REALTIME_SPEED: ${REALTIME_SPEED:-1.0}
+    volumes:
+      - ./services/replay-producer/data:/app/data
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── Preprocess Buffer ──
+  preprocess-buffer:
+    build:
+      context: ./services
+      dockerfile: preprocess-buffer-service/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── Inference Service ──
+  inference-service:
+    build:
+      context: ./services
+      dockerfile: inference-service/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      MODEL_CHECKPOINT: ${MODEL_CHECKPOINT:-artifacts/best_mitbih_v25.pt}
+      THR_A: ${THR_A:-0.65}
+    volumes:
+      - ./services/inference-service/artifacts:/app/artifacts
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── Alert Engine ──
+  alert-engine:
+    build:
+      context: ./services
+      dockerfile: alert-engine-service/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://ecg_admin:ecg_secret_2024@postgres:5432/ecg_cdss}
+      V_WINDOW: ${V_WINDOW:-10}
+      V_THRESH: ${V_THRESH:-5}
+      COOLDOWN_V: ${COOLDOWN_V:-20}
+      A_WINDOW: ${A_WINDOW:-30}
+      A_THRESH: ${A_THRESH:-4}
+      COOLDOWN_A: ${COOLDOWN_A:-45}
+      THR_A: ${THR_A:-0.65}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgdata:
